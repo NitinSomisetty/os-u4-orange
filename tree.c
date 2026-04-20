@@ -10,7 +10,7 @@
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
 
 #include "tree.h"
-#include <stdio.h>
+#include "index.h"#include "index.h"#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
@@ -116,6 +116,91 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 
 // ─── TODO: Implement these ──────────────────────────────────────────────────
 
+// Helper: Build a tree from index entries at a given depth (for nested directories)
+static int write_tree_level(IndexEntry *entries, int count, int depth, ObjectID *id_out) {
+    Tree tree;
+    tree.count = 0;
+    
+    // Group entries by their prefix at this depth
+    int i = 0;
+    while (i < count && tree.count < MAX_TREE_ENTRIES) {
+        // Find the next path component at this depth
+        const char *path = entries[i].path;
+        
+        // Count slashes up to depth
+        int slash_count = 0;
+        const char *p = path;
+        while (*p && slash_count < depth) {
+            if (*p == '/') slash_count++;
+            p++;
+        }
+        
+        // p now points to the current component at this depth
+        // Find the end of this component (next slash or end of string)
+        const char *component_start = p;
+        while (*p && *p != '/') p++;
+        int component_len = p - component_start;
+        
+        // Check if this is a file (no more slashes) or a directory (slash exists)
+        int is_dir = (*p == '/');
+        
+        TreeEntry *tree_entry = &tree.entries[tree.count];
+        memcpy(tree_entry->name, component_start, component_len);
+        tree_entry->name[component_len] = '\0';
+        
+        if (!is_dir) {
+            // Leaf file - use entry's hash
+            tree_entry->mode = entries[i].mode;
+            tree_entry->hash = entries[i].hash;
+            i++;
+        } else {
+            // Directory - collect all entries under this prefix and recurse
+            int subdir_start = i;
+            int subdir_count = 0;
+            
+            // Count and collect all entries in this subdirectory
+            while (i < count) {
+                int slash_cnt = 0;
+                const char *sp = entries[i].path;
+                while (*sp && slash_cnt < depth) {
+                    if (*sp == '/') slash_cnt++;
+                    sp++;
+                }
+                
+                const char *sc_start = sp;
+                while (*sp && *sp != '/') sp++;
+                
+                if (sp - sc_start != component_len || 
+                    strncmp(sc_start, component_start, component_len) != 0) {
+                    break;
+                }
+                i++;
+                subdir_count++;
+            }
+            
+            // Recursively write the subtree
+            if (write_tree_level(&entries[subdir_start], subdir_count, depth + 1, &tree_entry->hash) != 0) {
+                return -1;
+            }
+            
+            tree_entry->mode = MODE_DIR;
+        }
+        
+        tree.count++;
+    }
+    
+    // Serialize and write tree
+    void *tree_data;
+    size_t tree_len;
+    if (tree_serialize(&tree, &tree_data, &tree_len) != 0) {
+        return -1;
+    }
+    
+    int rc = object_write(OBJ_TREE, tree_data, tree_len, id_out);
+    free(tree_data);
+    return rc;
+}
+
 // Build a tree hierarchy from the current index and write all tree
 // objects to the object store.
 //
@@ -130,8 +215,16 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    // Load index
+    Index index;
+    if (index_load(&index) != 0) {
+        return -1;
+    }
+    
+    if (index.count == 0) {
+        return -1;  // Can't create tree from empty index
+    }
+    
+    // Build and write tree hierarchy
+    return write_tree_level(index.entries, index.count, 0, id_out);
 }
