@@ -16,6 +16,7 @@
 // TODO functions:     index_load, index_save, index_add
 
 #include "index.h"
+#include "tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -170,6 +171,13 @@ int index_load(Index *index) {
     return 0;
 }
 
+// Helper for qsort to sort index entry pointers by path
+static int compare_index_entry_ptrs(const void *a, const void *b) {
+    const IndexEntry *entry_a = *(const IndexEntry * const *)a;
+    const IndexEntry *entry_b = *(const IndexEntry * const *)b;
+    return strcmp(entry_a->path, entry_b->path);
+}
+
 // Helper for qsort to sort index entries by path
 static int compare_index_entries(const void *a, const void *b) {
     return strcmp(((const IndexEntry *)a)->path, ((const IndexEntry *)b)->path);
@@ -186,19 +194,29 @@ static int compare_index_entries(const void *a, const void *b) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    // Sort entries by path
-    Index sorted = *index;
-    qsort(sorted.entries, sorted.count, sizeof(IndexEntry), compare_index_entries);
+    // Create array of pointers to entries for sorting without copying the entire struct
+    IndexEntry **entry_ptrs = malloc(index->count * sizeof(IndexEntry *));
+    if (!entry_ptrs && index->count > 0) return -1;
+    
+    for (int i = 0; i < index->count; i++) {
+        entry_ptrs[i] = (IndexEntry *)&index->entries[i];
+    }
+    
+    // Sort by comparing paths
+    qsort(entry_ptrs, index->count, sizeof(IndexEntry *), compare_index_entry_ptrs);
     
     // Write to temporary file
     char temp_path[512];
     snprintf(temp_path, sizeof(temp_path), "%s.tmp", INDEX_FILE);
     
     FILE *f = fopen(temp_path, "w");
-    if (!f) return -1;
+    if (!f) {
+        free(entry_ptrs);
+        return -1;
+    }
     
-    for (int i = 0; i < sorted.count; i++) {
-        const IndexEntry *entry = &sorted.entries[i];
+    for (int i = 0; i < index->count; i++) {
+        const IndexEntry *entry = entry_ptrs[i];
         char hex_hash[HASH_HEX_SIZE + 1];
         hash_to_hex(&entry->hash, hex_hash);
         
@@ -209,6 +227,8 @@ int index_save(const Index *index) {
                 entry->size,
                 entry->path);
     }
+    
+    free(entry_ptrs);
     
     if (fflush(f) != 0) {
         fclose(f);
