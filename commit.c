@@ -194,8 +194,60 @@ int head_update(const ObjectID *new_commit) {
 //
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    // Step 1: Build tree from index
+    ObjectID tree_id;
+    if (tree_from_index(&tree_id) != 0) {
+        fprintf(stderr, "error: failed to create tree from index\n");
+        return -1;
+    }
+    
+    // Step 2: Read parent commit (may not exist for first commit)
+    ObjectID parent_id;
+    int has_parent = (head_read(&parent_id) == 0);
+    
+    // Step 3: Create commit object
+    Commit commit;
+    commit.tree = tree_id;
+    if (has_parent) {
+        commit.parent = parent_id;
+        commit.has_parent = 1;
+    } else {
+        commit.has_parent = 0;
+    }
+    
+    // Step 4: Get author and timestamp
+    strncpy(commit.author, pes_author(), sizeof(commit.author) - 1);
+    commit.author[sizeof(commit.author) - 1] = '\0';
+    commit.timestamp = (uint64_t)time(NULL);
+    
+    // Step 5: Copy message
+    strncpy(commit.message, message, sizeof(commit.message) - 1);
+    commit.message[sizeof(commit.message) - 1] = '\0';
+    
+    // Step 6: Serialize commit
+    void *commit_data;
+    size_t commit_len;
+    if (commit_serialize(&commit, &commit_data, &commit_len) != 0) {
+        fprintf(stderr, "error: failed to serialize commit\n");
+        return -1;
+    }
+    
+    // Step 7: Write commit to object store
+    ObjectID commit_id;
+    if (object_write(OBJ_COMMIT, commit_data, commit_len, &commit_id) != 0) {
+        free(commit_data);
+        fprintf(stderr, "error: failed to write commit object\n");
+        return -1;
+    }
+    
+    free(commit_data);
+    
+    // Step 8: Update HEAD/branch
+    if (head_update(&commit_id) != 0) {
+        fprintf(stderr, "error: failed to update HEAD\n");
+        return -1;
+    }
+    
+    *commit_id_out = commit_id;
+    return 0;
 }
